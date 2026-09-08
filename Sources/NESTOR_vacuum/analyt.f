@@ -284,17 +284,17 @@
 !-------------------------------------------------------------------------------
 !>  @brief Querey if to use forward or backwards propagation.
 !>
-!>  Only switch to backward when the forward spurious-mode growth
-!>  (|r1 r2| = B/A) would actually exceed double precision over kL steps.
-!>  Threshold: forward is considered stable as long as (B/A)^kL < 1e10,
-!>  i.e. spurious amplitude stays within ~1e10 of the particular solution.
-!>  Near-degenerate kl (|r1|~|r2|~1) fall in the forward branch, where
-!>  zero-seed Miller is known to misconverge (spurious modes never damp).
-!>  Formula: kL * ln(B/A) < ln(1e10) -> B/A < exp(ln(1e10)/kL).
+!>  The homogeneous solutions of the recurrence are a complex pair of
+!>  modulus sqrt(a/b), so a forward pass over the mf + nf steps
+!>  amplifies the rounding of its inputs by sqrt(a/b)^(mf + nf). The
+!>  forward pass is used while that growth stays below ten, otherwise
+!>  the recurrence is run backward from a seed placed far enough above
+!>  mf + nf.
+!>  Formula: (mf + nf) * ln(a/b) <= 2 ln(10).
 !>
 !>  @param[in] a
 !>  @param[in] b
-!>  @returns true if log(a/b) > ln(1E10)
+!>  @returns true if (mf + nf) * log(a/b) > 2 ln(10)
 !-------------------------------------------------------------------------------
       PURE FUNCTION useBackward(a, b)
       USE stel_kinds
@@ -308,12 +308,13 @@
       REAL(dp), INTENT(in) :: b
 
 !  local parameters
-      REAL(dp), PARAMETER  :: kLogGrowthThreshold = 23.0258509299 ! ln(1e10)
+      REAL(dp), PARAMETER  :: kMaxForwardLogGrowth =
+     &   2.302585092994046_dp
 
 !  Start of executable code
       useBackward = a .gt. b   .and.
      &              b .gt. 0.0 .and.
-     &              (mf + nf)*log(a/b) .gt. kLogGrowthThreshold
+     &              (mf + nf)*log(a/b) .gt. 2.0_dp*kMaxForwardLogGrowth
 
       END FUNCTION
 
@@ -387,23 +388,27 @@
       REAL(dp)                                       :: high
       REAL(dp)                                       :: current
       REAL(dp)                                       :: low
-      REAL(dp)                                       :: scale
       REAL(dp)                                       :: sign1
       INTEGER                                        :: l
+      INTEGER                                        :: ntail
 
 !  local parameters
-      INTEGER, PARAMETER :: kTailExtra = 50
+!  The zero seed of a backward pass contaminates tl(l) by
+!  (b/a)^((top - l)/2) of tl(top). The pass starts ntail steps above
+!  mf + nf so that this falls below 1e-17 at mf + nf.
+      REAL(dp), PARAMETER :: kMinSeedLogDecay = 39.14394658089878_dp
 
 !  Start of executable code
       IF (useBackward(a,b)) THEN
+         ntail = CEILING(2.0_dp*kMinSeedLogDecay/LOG(a/b))
          high = 0.0
-         current = 1.0E-300_dp
-         IF (MOD(mf + nf + kTailExtra, 2) .eq. 0) THEN
+         current = 0.0
+         IF (MOD(mf + nf + ntail, 2) .eq. 0) THEN
             sign1 = -1
          ELSE
             sign1 = 1
          ENDIF
-         DO l = mf + nf + kTailExtra, mf + nf + 2, -1
+         DO l = mf + nf + ntail, mf + nf + 2, -1
             low = recurrence(b, a, sqrtc, sqrta, sign1,
      &                       l + 1, l, 2*l + 1, cma, high, current)
             high = current
@@ -417,10 +422,7 @@
             current = tl(l - 1)
             sign1 = -sign1
          END DO
-         scale = t0/tl(0)
-         DO l = 0, mf + nf
-            tl(l) = tl(l)*scale
-         END DO
+         tl(0) = t0
       ELSE
          sign1 = 1
          DO l = 0, mf + nf - 1
